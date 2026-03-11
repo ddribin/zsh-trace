@@ -10,10 +10,12 @@ Analyze Zsh startup performance from xtrace logs. Generates summaries and
 
 ## Generating a trace
 
-Add this near the top of your `~/.zshenv` (since that runs before `~/.zshrc`):
+Add this near the top of your `~/.zshenv` (since that [runs before][zsh-startup-order] `~/.zshrc`):
+
+[zsh-startup-order]: https://shreevatsa.wordpress.com/2008/03/30/zshbash-startup-files-loading-order-bashrc-zshrc-etc/
 
 ```zsh
-# Profiling via:
+# Profiling via:  
 # https://kev.inburke.com/kevin/profiling-zsh-startup-time/
 : "${PROFILE_STARTUP:=false}"
 : "${PROFILE_ALL:=false}"
