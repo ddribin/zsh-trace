@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Analyze Zsh xtrace startup logs.
+
+Usage:
+    zsh-trace summary <trace-file>          # Show top time consumers
+    zsh-trace flamegraph <trace-file>       # Output folded stacks for flamegraph.pl
+
+Generating a trace:
+    Add this to the top of your ~/.zshrc (after any instant prompt setup):
+
+        PROFILE_STARTUP=true
+        if [[ "$PROFILE_STARTUP" == true ]]; then
+            PS4='%D{%M%S%6.} %N:%i> '
+            exec 3>&2 2>/tmp/zsh_profile.$$
+            setopt xtrace prompt_subst
+        fi
+
+    And this at the end:
+
+        if [[ "$PROFILE_STARTUP" == true ]]; then
+            unsetopt xtrace
+            exec 2>&3 3>&-
+        fi
+
+    Then start a new shell and analyze the trace:
+
+        zsh-trace summary /tmp/zsh_profile.<pid>
+        zsh-trace flamegraph /tmp/zsh_profile.<pid> | flamegraph.pl > startup.svg
+"""
+
+import argparse
+import re
+import sys
+import os
+from collections import defaultdict
+
+
+def shorten_path(path):
+    """Shorten file paths for readability."""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        path = "~" + path[len(home):]
+    path = re.sub(r'/opt/homebrew/Cellar/([^/]+/[^/]+/share/[^/]+/)', r'\1…/', path)
+    return path
+
+
+def parse_line(line):
+    """Parse a Zsh xtrace line into (timestamp, context, lineno, command).
+
+    Returns None if the line doesn't match the expected format.
+    """
+    # Strip leading line numbers/arrows if present (e.g., from cat -n)
+    line = re.sub(r'^\s*\d+→', '', line)
+    m = re.match(r'\s*(\d+)\s+(.+?):(\d+)>\s*(.*)', line)
+    if not m:
+        return None
+    timestamp = int(m.group(1))
+    context = m.group(2)
+    lineno = int(m.group(3))
+    command = m.group(4).strip()
+    return timestamp, context, lineno, command
+
+
+def parse_entries(input_file):
+    """Parse a trace file into a list of (timestamp, context, lineno, command) tuples."""
+    entries = []
+    with open(input_file, 'r', errors='replace') as f:
+        for line in f:
+            parsed = parse_line(line)
+            if parsed:
+                entries.append(parsed)
+
+    if not entries:
+        print("No valid xtrace lines found.", file=sys.stderr)
+        sys.exit(1)
+
+    return entries
+
+
+def build_folded_stacks(entries):
+    """Build folded stacks from parsed entries. Returns dict of stack_key -> total μs."""
+    folded_stacks = defaultdict(int)
+    stack = []
+
+    for i in range(len(entries)):
+        timestamp, context, lineno, command = entries[i]
+
+        if not stack:
+            stack.append(context)
+        else:
+            if context != stack[-1]:
+                found_idx = None
+                for idx in range(len(stack) - 1, -1, -1):
+                    if stack[idx] == context:
+                        found_idx = idx
+                        break
+                if found_idx is not None:
+                    stack = stack[:found_idx + 1]
+                else:
+                    stack.append(context)
+
+        display_stack = [shorten_path(s) for s in stack]
+        stack_key = ";".join(display_stack)
+
+        if i + 1 < len(entries):
+            delta = entries[i + 1][0] - timestamp
+        else:
+            delta = 0
+        if delta > 0:
+            folded_stacks[stack_key] += delta
+
+    return folded_stacks
+
+
+def build_command_times(entries):
+    """Build per-command time list. Returns list of (delta, context, lineno, command)."""
+    commands = []
+    for i in range(len(entries)):
+        timestamp, context, lineno, command = entries[i]
+        if i + 1 < len(entries):
+            delta = entries[i + 1][0] - timestamp
+        else:
+            delta = 0
+        if delta > 0:
+            commands.append((delta, shorten_path(context), lineno, command))
+    commands.sort(key=lambda x: x[0], reverse=True)
+    return commands
+
+
+def cmd_summary(args):
+    """Print a summary of top time consumers."""
+    entries = parse_entries(args.trace_file)
+    folded_stacks = build_folded_stacks(entries)
+    total = sum(folded_stacks.values())
+    top = sorted(folded_stacks.items(), key=lambda x: x[1], reverse=True)
+
+    print(f"\nTotal: {total:,} μs ({total / 1000:.1f} ms)\n")
+    print(f"Top {args.n} stacks:\n")
+
+    for stack_key, count in top[:args.n]:
+        pct = count / total * 100
+        display = stack_key.replace(";", " > ")
+        print(f"  {count/1000:>6.1f} ms  ({pct:4.1f}%)  {display}")
+
+    if args.commands:
+        command_times = build_command_times(entries)
+        print(f"\nSlowest {args.n} commands:\n")
+        for delta, context, lineno, command in command_times[:args.n]:
+            pct = delta / total * 100
+            cmd_display = command if len(command) <= 80 else command[:77] + "..."
+            print(f"  {delta/1000:>6.1f} ms  ({pct:4.1f}%)  {context}:{lineno}  {cmd_display}")
+
+    print()
+
+
+def cmd_flamegraph(args):
+    """Output folded stacks for flamegraph.pl."""
+    entries = parse_entries(args.trace_file)
+    folded_stacks = build_folded_stacks(entries)
+
+    if args.summary:
+        total = sum(folded_stacks.values())
+        top = sorted(folded_stacks.items(), key=lambda x: x[1], reverse=True)
+
+        print(f"\nTotal: {total:,} μs ({total / 1000:.1f} ms)\n", file=sys.stderr)
+        print(f"Top {args.n}:\n", file=sys.stderr)
+        for stack_key, count in top[:args.n]:
+            pct = count / total * 100
+            display = stack_key.replace(";", " > ")
+            print(f"  {count/1000:>6.1f} ms  ({pct:4.1f}%)  {display}", file=sys.stderr)
+        print(file=sys.stderr)
+
+    for stack_key, count in sorted(folded_stacks.items()):
+        print(f"{stack_key} {count}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Analyze Zsh xtrace startup logs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="See 'zsh-trace <command> --help' for more info on a command.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # summary
+    p_summary = subparsers.add_parser("summary", help="Show top time consumers")
+    p_summary.add_argument("trace_file", help="Zsh xtrace log file")
+    p_summary.add_argument("-n", type=int, default=15,
+                           help="Number of entries to show (default: 15)")
+    p_summary.add_argument("--commands", action="store_true",
+                           help="Also show slowest individual commands")
+    p_summary.set_defaults(func=cmd_summary)
+
+    # flamegraph
+    p_flame = subparsers.add_parser("flamegraph",
+                                    help="Output folded stacks for flamegraph.pl")
+    p_flame.add_argument("trace_file", help="Zsh xtrace log file")
+    p_flame.add_argument("--summary", action="store_true",
+                         help="Also print summary to stderr")
+    p_flame.add_argument("-n", type=int, default=15,
+                         help="Number of summary entries (default: 15)")
+    p_flame.set_defaults(func=cmd_flamegraph)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
