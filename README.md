@@ -1,6 +1,6 @@
 # zsh-trace
 
-Analyze Zsh startup performance from xtrace logs. Generates summaries and
+Analyze Zsh startup performance from `xtrace` logs. Generates summaries and
 [flamegraphs](https://www.brendangregg.com/flamegraphs.html).
 
 ## Requirements
