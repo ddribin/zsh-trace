@@ -10,18 +10,29 @@ Analyze Zsh startup performance from xtrace logs. Generates summaries and
 
 ## Generating a trace
 
-Add this near the top of your `~/.zshrc` (after any instant prompt setup):
+Add this near the top of your `~/.zshenv` (since that runs before `~/.zshrc`):
 
 ```zsh
-PROFILE_STARTUP=true
-if [[ "$PROFILE_STARTUP" == true ]]; then
+# Profiling via:
+# https://kev.inburke.com/kevin/profiling-zsh-startup-time/
+: "${PROFILE_STARTUP:=false}"
+: "${PROFILE_ALL:=false}"
+# Run this to get a profile trace and exit: time zsh -i -c true
+# Or: time PROFILE_STARTUP=true /bin/zsh -i --login -c true
+if [[ "$PROFILE_STARTUP" == true || "$PROFILE_ALL" == true ]]; then
+    # http://zsh.sourceforge.net/Doc/Release/Prompt-Expansion.html
     PS4='%D{%M%S%6.} %N:%i> '
-    exec 3>&2 2>/tmp/zsh_profile.$$
+    #zmodload zsh/datetime
+    #PS4='+$EPOCHREALTIME %N:%i> '
+    local _profile_log=/tmp/zsh_profile.$$
+    exec 3>&2 2>$_profile_log
     setopt xtrace prompt_subst
+    print "Profiling to $_profile_log" >&3
 fi
+# "unsetopt xtrace" is at the end of ~/.zshrc
 ```
 
-And at the end:
+And at the end of your `~/.zshrc`:
 
 ```zsh
 if [[ "$PROFILE_STARTUP" == true ]]; then
@@ -30,8 +41,12 @@ if [[ "$PROFILE_STARTUP" == true ]]; then
 fi
 ```
 
-Start a new shell, then set `PROFILE_STARTUP=false` (or remove it) and analyze
-the trace file.
+Start a login shell and analyze the trace file:
+
+```
+> PROFILE_STARTUP=true /bin/zsh -i --login -c true
+Profiling to /tmp/zsh_profile.21786
+```
 
 **Important:** Use `%6.` (microseconds) rather than `%.` (milliseconds) in PS4
 for useful time resolution.
